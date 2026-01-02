@@ -8,6 +8,7 @@ import os
 import math
 import random
 import requests
+import unicodedata
 import pandas as pd
 
 app = FastAPI()
@@ -174,11 +175,19 @@ def meal_key_from_label(name: str) -> str:
         return "cena"
     return "almuerzo"
 
+def normalize_key(value: str) -> str:
+    if not value:
+        return ""
+    text = str(value).strip().lower().replace("_", " ")
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return "".join(text.split())
+
 def normalize_allowed(s: str) -> List[str]:
     if not s:
         return []
-    parts = [p.strip().lower() for p in str(s).replace(";", ",").split(",")]
-    return [p for p in parts if p]
+    parts = [p.strip() for p in str(s).replace(";", ",").split(",")]
+    return [normalize_key(p) for p in parts if p]
 
 def pantry_status_for_food(food_id: str) -> str:
     # prioridad: si está en despensa disponible => available; si está out => out; si no existe => missing
@@ -300,13 +309,14 @@ def pick_food(meal_key: str, role: str) -> dict:
     """
     load_master()
     role_l = role.lower()
+    meal_key_norm = normalize_key(meal_key)
     pool = []
     for f in list(foods_custom.values()) + list(foods_master.values()):
         r = (f.get("rol_principal") or "").lower()
         if role_l and role_l not in r:
             continue
         allowed = normalize_allowed(f.get("permitido_comidas") or "")
-        if allowed and meal_key not in allowed and meal_key.replace("_", "") not in "".join(allowed):
+        if allowed and meal_key_norm not in allowed:
             continue
         pool.append(f)
 
@@ -318,7 +328,10 @@ def pick_food(meal_key: str, role: str) -> dict:
             pool.append(f)
 
     if not pool:
-        raise HTTPException(404, f"No hay alimentos disponibles para rol '{role}'")
+        pool = list(foods_custom.values()) + list(foods_master.values())
+
+    if not pool:
+        raise HTTPException(404, "No hay alimentos disponibles en el catálogo")
 
     return dict(random.choice(pool))
 
