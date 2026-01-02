@@ -68,37 +68,6 @@ _next_shop_id = 1
 _next_custom_id = 1
 
 # =========================
-# DataFrame global de alimentos (CRÍTICO)
-# =========================
-
-foods_df = None
-
-def load_foods_df():
-    global foods_df
-    if foods_df is not None:
-        return foods_df
-
-    df = pd.read_csv(CSV_PATH)
-
-    # Seguridad: columnas obligatorias
-    for col in [
-        "id",
-        "nombre",
-        "rol_principal",
-        "permitido_comidas",
-        "kcal_100g",
-        "proteina_100g",
-        "hidratos_100g",
-        "grasas_100g",
-    ]:
-        if col not in df.columns:
-            df[col] = ""
-
-    foods_df = df
-    return foods_df
-
-
-# =========================
 # Models
 # =========================
 class TrainingBody(BaseModel):
@@ -323,63 +292,35 @@ def candidate_pool_for(meal_key: str, role: str) -> List[dict]:
         pool.append(f)
     return pool
 
-def pick_food(meal_key: str, role: str):
+def pick_food(meal_key: str, role: str) -> dict:
     """
     Selecciona un alimento respetando:
     - rol_principal
     - permitido_comidas (CRÍTICO)
     """
+    load_master()
+    role_l = role.lower()
+    pool = []
+    for f in list(foods_custom.values()) + list(foods_master.values()):
+        r = (f.get("rol_principal") or "").lower()
+        if role_l and role_l not in r:
+            continue
+        allowed = normalize_allowed(f.get("permitido_comidas") or "")
+        if allowed and meal_key not in allowed and meal_key.replace("_", "") not in "".join(allowed):
+            continue
+        pool.append(f)
 
-    df = load_foods_df().copy()
+    if not pool:
+        for f in list(foods_custom.values()) + list(foods_master.values()):
+            r = (f.get("rol_principal") or "").lower()
+            if role_l and role_l not in r:
+                continue
+            pool.append(f)
 
+    if not pool:
+        raise HTTPException(404, f"No hay alimentos disponibles para rol '{role}'")
 
-    # Seguridad
-    df["rol_principal"] = df["rol_principal"].fillna("")
-    df["permitido_comidas"] = df["permitido_comidas"].fillna("")
-
-    # Filtrar por rol nutricional
-    df = df[df["rol_principal"].str.contains(role, case=False)]
-
-    # Filtrar por comida permitida
-    df = df[df["permitido_comidas"].str.contains(meal_key, case=False)]
-
-    if df.empty:
-        # fallback MUY controlado (último recurso)
-        df = foods_df[
-            foods_df["rol_principal"]
-            .fillna("")
-            .str.contains(role, case=False)
-        ]
-
-    # Mezclar (priorización de despensa se afinará luego)
-    df = df.sample(frac=1)
-
-    food = df.iloc[0]
-
-    return {
-        "id": food["id"],
-        "name": food["nombre"],
-
-        # kcal
-        "kcal_100g": float(food["kcal_100g"]),
-        "kcal": float(food["kcal_100g"]),
-
-        # proteínas
-        "protein_100g": float(food["proteina_100g"]),
-        "proteina_100g": float(food["proteina_100g"]),
-
-        # hidratos
-        "carbs_100g": float(food["hidratos_100g"]),
-        "hidratos_100g": float(food["hidratos_100g"]),
-
-        # grasas
-        "fat_100g": float(food["grasas_100g"]),
-        "grasas_100g": float(food["grasas_100g"]),
-
-        # metadatos
-        "rol_principal": str(food.get("rol_principal", "")),
-        "permitido_comidas": str(food.get("permitido_comidas", "")),
-    }
+    return dict(random.choice(pool))
 
 def grams_for_role(food: dict, role: str, target_macros: dict) -> float:
     # grams para aproximar macros del rol (simple y robusto)
@@ -727,9 +668,8 @@ def custom_food_manual(body: ManualFoodBody):
 # ======================
 
 @app.post("/generator/generate_day")
-def generate_day(body: dict):
-    # body puede venir como {"day_date": "YYYY-MM-DD"}
-    dd = body.get("day_date")
+def generate_day(body: GenerateDayBody):
+    dd = body.day_date
 
     if not dd:
         raise HTTPException(status_code=400, detail="day_date missing")
